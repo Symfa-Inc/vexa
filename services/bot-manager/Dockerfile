@@ -8,6 +8,7 @@ WORKDIR /app
 # Copy the shared library source code
 COPY ./libs/shared-models/ /app/libs/shared-models/
 # Install the shared library so it's available to the app
+ENV PIP_NO_BUILD_ISOLATION=1
 RUN pip install --no-cache-dir /app/libs/shared-models/
 
 # --- Install App Dependencies ---

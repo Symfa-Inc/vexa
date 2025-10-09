@@ -4,7 +4,9 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
+
 # Install shared library first
+ENV PIP_NO_BUILD_ISOLATION=1
 COPY ./libs/shared-models /app/libs/shared-models
 RUN pip install --no-cache-dir /app/libs/shared-models
 
