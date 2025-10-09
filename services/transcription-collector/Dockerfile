@@ -7,8 +7,7 @@ WORKDIR /app
 # Install shared library first
 COPY ./libs/shared-models /app/libs/shared-models
 # Explicitly install the shared library from its location within the container
-ENV PIP_NO_BUILD_ISOLATION=1
-RUN pip install --no-cache-dir /app/libs/shared-models
+RUN pip install --no-build-isolation --no-cache-dir /app/libs/shared-models
 
 COPY alembic.ini /app/alembic.ini
 COPY ./libs/shared-models/alembic /app/alembic

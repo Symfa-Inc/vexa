@@ -6,9 +6,8 @@ WORKDIR /app
 
 
 # Install shared library first
-ENV PIP_NO_BUILD_ISOLATION=1
 COPY ./libs/shared-models /app/libs/shared-models
-RUN pip install --no-cache-dir /app/libs/shared-models
+RUN pip install --no-build-isolation --no-cache-dir /app/libs/shared-models
 
 # Copy application code and requirements
 COPY ./services/api-gateway/requirements.txt /app/

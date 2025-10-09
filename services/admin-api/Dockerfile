@@ -7,8 +7,7 @@ WORKDIR /app
 # Install shared library first
 COPY ./libs/shared-models /app/libs/shared-models
 
-ENV PIP_NO_BUILD_ISOLATION=1
-RUN pip install --no-cache-dir /app/libs/shared-models
+RUN pip install --no-build-isolation --no-cache-dir /app/libs/shared-models
 
 # Copy application code and requirements
 COPY ./services/admin-api/requirements.txt /app/
