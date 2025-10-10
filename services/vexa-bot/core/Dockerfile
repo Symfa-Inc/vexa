@@ -29,8 +29,8 @@ RUN npm run build
 # Install Playwright dependencies (if not already installed via npm)
 RUN npx playwright install-deps && npx playwright install --with-deps
 
-# Install MS Edge for Teams support
-RUN npx playwright install msedge
+# Install MS Edge for Teams support (skip on ARM64)
+RUN if [ "$(uname -m)" != "aarch64" ]; then npx playwright install msedge; else echo "Skipping MS Edge installation on ARM64"; fi
 
 # --- Runtime Stage ---
 FROM mcr.microsoft.com/playwright:v1.55.1-jammy AS runtime
@@ -48,8 +48,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy the built application and node_modules from the base stage
 COPY --from=base /app /app
 
-# Install MS Edge in runtime stage as well
-RUN npx playwright install msedge
+# Install MS Edge in runtime stage as well (skip on ARM64)
+RUN if [ "$(uname -m)" != "aarch64" ]; then npx playwright install msedge; else echo "Skipping MS Edge installation on ARM64"; fi
 
 # Ensure the Playwright cache directory has proper permissions (adjust path if needed)
 RUN mkdir -p /root/ms-playwright && chmod -R 777 /root/ms-playwright

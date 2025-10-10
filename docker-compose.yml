@@ -22,6 +22,7 @@ services:
         condition: service_started
     networks:
       - vexa_default
+      - vexa_shared_network
     restart: unless-stopped
 
   admin-api:
@@ -52,6 +53,7 @@ services:
       dockerfile: services/bot-manager/Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
       - BOT_IMAGE_NAME=${BOT_IMAGE_NAME:-vexa-bot:dev}
       - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-vexa}_vexa_default
       - LOG_LEVEL=DEBUG
@@ -62,7 +64,7 @@ services:
       - DB_PASSWORD=postgres
       - DOCKER_HOST=unix://var/run/docker.sock
       - DEVICE_TYPE=${DEVICE_TYPE}
-      - WHISPER_LIVE_URL=ws://traefik:8081/ws  # Traefik entrypoint for WS
+      - WHISPER_LIVE_URL=ws://whisperlive-cpu:9090/ws  # Direct connection to whisperlive-cpu
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     init: true
@@ -139,23 +141,18 @@ services:
       - --api.dashboard=true
       - --api.insecure=true
       - --entrypoints.web.address=:8081
-      - --providers.consulcatalog=true
-      - --providers.consulcatalog.endpoint.address=consul:8500
-      - --providers.consulcatalog.exposedbydefault=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
       - --accesslog=true
       - --accesslog.format=json
     ports:
       - "8082:8080"
       - "8081:8081"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - vexa_default
     restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
 
   # CPU version of WhisperLive for users without GPU
   whisperlive-cpu:
@@ -199,9 +196,11 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-
-
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whisperlive.entrypoints=web"
+      - "traefik.http.routers.whisperlive.rule=PathPrefix(`/ws`)"
+      - "traefik.http.services.whisperlive.loadbalancer.server.port=9090"
 
   transcription-collector:
     build:
@@ -264,7 +263,19 @@ services:
       - redis-data:/data
     networks:
       - vexa_default
+      - vexa_shared_network
+
     restart: unless-stopped
+    ports:
+      - 6379:6379
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redis-insight
+    ports:
+      - "5540:5540"
+    networks:
+      - vexa_default
 
   postgres:
     image: postgres:15-alpine
@@ -281,6 +292,8 @@ services:
       retries: 5
     networks:
       - vexa_default
+      - vexa_shared_network
+
     restart: unless-stopped
     ports:
       - "${POSTGRES_HOST_PORT:-5438}:5432"
@@ -292,3 +305,5 @@ volumes:
 networks:
   vexa_default:
     driver: bridge
+  vexa_shared_network:
+    external: true
