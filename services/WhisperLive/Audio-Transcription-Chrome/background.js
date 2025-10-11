@@ -138,32 +138,28 @@ async function startCapture(options) {
 
   try {
     const currentTab = await getTab(tabId);
-    if (currentTab.audible) {
-      await setLocalStorageValue("currentTabId", currentTab.id);
-      await executeScriptInTab(currentTab.id, "content.js");
-      await delayExecution(500);
+    await setLocalStorageValue("currentTabId", currentTab.id);
+    await executeScriptInTab(currentTab.id, "content.js");
+    await delayExecution(500);
 
-      const optionTab = await openExtensionOptions();
+    const optionTab = await openExtensionOptions();
 
-      await setLocalStorageValue("optionTabId", optionTab.id);
-      await delayExecution(500);
+    await setLocalStorageValue("optionTabId", optionTab.id);
+    await delayExecution(500);
 
-      await sendMessageToTab(optionTab.id, {
-        type: "start_capture",
-        data: { 
-          currentTabId: currentTab.id, 
-          host: options.host, 
-          port: options.port, 
-          multilingual: options.useMultilingual,
-          language: options.language,
-          task: options.task,
-          modelSize: options.modelSize,
-          useVad: options.useVad,
-        },
-      });
-    } else {
-      console.log("No Audio");
-    }
+    await sendMessageToTab(optionTab.id, {
+      type: "start_capture",
+      data: { 
+        currentTabId: currentTab.id, 
+        host: options.host, 
+        port: options.port, 
+        multilingual: options.useMultilingual,
+        language: options.language,
+        task: options.task,
+        modelSize: options.modelSize,
+        useVad: options.useVad,
+      },
+    });
   } catch (error) {
     console.error("Error occurred while starting capture:", error);
   }
@@ -192,20 +188,28 @@ async function stopCapture() {
  * Listens for messages from the runtime and performs corresponding actions.
  * @param {Object} message - The message received from the runtime.
  */
-chrome.runtime.onMessage.addListener(async (message) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "startCapture") {
-    startCapture(message);
+    startCapture(message).then(() => sendResponse({success: true}));
+    return true; // Required for async sendResponse
   } else if (message.action === "stopCapture") {
-    stopCapture();
+    stopCapture().then(() => sendResponse({success: true}));
+    return true; // Required for async sendResponse
   } else if (message.action === "updateSelectedLanguage") {
     const detectedLanguage = message.detectedLanguage;
     chrome.runtime.sendMessage({ action: "updateSelectedLanguage", detectedLanguage });
-    chrome.storage.local.set({ selectedLanguage: detectedLanguage });
+    chrome.storage.local.set({ selectedLanguage: detectedLanguage }, () => {
+      sendResponse({success: true});
+    });
+    return true; // Required for async sendResponse
   } else if (message.action === "toggleCaptureButtons") {
     chrome.runtime.sendMessage({ action: "toggleCaptureButtons", data: false });
-    chrome.storage.local.set({ capturingState: { isCapturing: false } })
-    stopCapture();
+    chrome.storage.local.set({ capturingState: { isCapturing: false } }, () => {
+      stopCapture().then(() => sendResponse({success: true}));
+    });
+    return true; // Required for async sendResponse
   }
+  return false; // No async response needed
 });
 
 

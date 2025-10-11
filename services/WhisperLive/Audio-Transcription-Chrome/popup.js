@@ -165,22 +165,30 @@ document.addEventListener("DOMContentLoaded", function () {
     chrome.storage.local.set({ selectedModelSize });
   });
 
-  chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "updateSelectedLanguage") {
       const detectedLanguage = request.detectedLanguage;
   
       if (detectedLanguage) {
         languageDropdown.value = detectedLanguage;
-        chrome.storage.local.set({ selectedLanguage: detectedLanguage });
+        chrome.storage.local.set({ selectedLanguage: detectedLanguage }, () => {
+          sendResponse({success: true});
+        });
+        return true; // Required for async sendResponse
       }
     }
+    return false;
   });
 
-  chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "toggleCaptureButtons") {
       toggleCaptureButtons(false);
-      chrome.storage.local.set({ capturingState: { isCapturing: false } })
+      chrome.storage.local.set({ capturingState: { isCapturing: false } }, () => {
+        sendResponse({success: true});
+      });
+      return true; // Required for async sendResponse
     }
+    return false;
   });
   
 });

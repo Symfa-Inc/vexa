@@ -13,7 +13,11 @@
         "storage",
         "activeTab",
         "tabCapture",
-        "scripting"
+        "scripting",
+        "tabs"
+    ],
+    "host_permissions": [
+        "<all_urls>"
     ],
     "icons": {
         "128":"icon128.png"

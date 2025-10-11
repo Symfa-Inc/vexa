@@ -165,6 +165,75 @@ To run Vexa locally on your own infrastructure, the primary command you'll use a
 
 Detailed instructions: [Local Deployment and Testing Guide](DEPLOYMENT.md).
 
+## Updating Your Build After Code Changes
+
+When you make changes to any service, you need to rebuild and restart the affected containers:
+
+### Quick Reference
+
+```bash
+# Rebuild and restart a single service
+docker-compose up --build -d <service-name>
+
+# Rebuild all services
+make build TARGET=cpu  # or TARGET=gpu
+
+# Rebuild the bot image specifically
+make build-bot-image
+```
+
+### Service-Specific Updates
+
+| Changed Service | Command |
+|----------------|---------|
+| **vexa-bot** (bot code) | `make build-bot-image` |
+| **transcription-collector** | `docker-compose up --build -d transcription-collector` |
+| **bot-manager** | `docker-compose up --build -d bot-manager` |
+| **WhisperLive** (CPU) | `docker-compose --profile cpu up --build -d whisperlive-cpu` |
+| **WhisperLive** (GPU) | `docker-compose --profile gpu up --build -d whisperlive` |
+| **api-gateway** | `docker-compose up --build -d api-gateway` |
+| **admin-api** | `docker-compose up --build -d admin-api` |
+
+### Common Workflows
+
+**Quick iteration during development:**
+```bash
+# After making changes
+docker-compose up --build -d <service-name>
+
+# View logs
+docker-compose logs -f <service-name>
+```
+
+**Full rebuild (when dependencies change):**
+```bash
+# Stop everything
+make down
+
+# Rebuild all services
+make build TARGET=cpu
+
+# Start services
+make up TARGET=cpu
+
+# Run migrations if needed
+make migrate-or-init
+```
+
+**Force rebuild without cache:**
+```bash
+# Use when Docker cache causes issues
+docker-compose build --no-cache <service-name>
+docker-compose up -d <service-name>
+```
+
+### Important Notes
+
+- **vexa-bot** containers are created dynamically for each meeting and auto-remove when done
+- After rebuilding `vexa-bot` image, new bot containers will automatically use the updated image
+- Changes to Python code (without dependency updates) can sometimes use `docker-compose restart <service>` instead of rebuild
+- Always rebuild when you modify `requirements.txt`, `package.json`, or Dockerfile
+
 ## Contributing
 
 Contributors are welcome! Join our community and help shape Vexa's future. Here's how to get involved:

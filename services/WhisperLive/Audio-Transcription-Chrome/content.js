@@ -161,10 +161,15 @@ function get_lines(elem, line_height) {
 
 function remove_element() {
     var elem = document.getElementById('transcription')
-    for (var i = 0; i < 4; i++) {
-        document.getElementById("t" + i).remove();
+    if (elem) {
+        for (var i = 0; i < 4; i++) {
+            var textElem = document.getElementById("t" + i);
+            if (textElem) {
+                textElem.remove();
+            }
+        }
+        elem.remove();
     }
-    elem.remove()
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

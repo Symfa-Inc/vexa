@@ -100,7 +100,11 @@ async function startRecord(option) {
           language: option.language,
           task: option.task,
           model: option.modelSize,
-          use_vad: option.useVad
+          use_vad: option.useVad,
+          platform: "chrome_extension",
+          meeting_url: window.location.href || "chrome_extension",
+          token: "chrome_extension_token",
+          meeting_id: uuid
         })
       );
     };
@@ -115,8 +119,12 @@ async function startRecord(option) {
           type: "showWaitPopup",
           data: data["message"],
         });
-        chrome.runtime.sendMessage({ action: "toggleCaptureButtons", data: false }) 
-        chrome.runtime.sendMessage({ action: "stopCapture" })
+        chrome.runtime.sendMessage({ action: "toggleCaptureButtons", data: false }, () => {
+          if (chrome.runtime.lastError) { /* ignore */ }
+        });
+        chrome.runtime.sendMessage({ action: "stopCapture" }, () => {
+          if (chrome.runtime.lastError) { /* ignore */ }
+        });
         return;
       }
         
@@ -133,13 +141,17 @@ async function startRecord(option) {
         chrome.runtime.sendMessage({
           action: "updateSelectedLanguage",
           detectedLanguage: language,
+        }, () => {
+          if (chrome.runtime.lastError) { /* ignore */ }
         });
 
         return;
       }
 
       if (data["message"] === "DISCONNECT"){
-        chrome.runtime.sendMessage({ action: "toggleCaptureButtons", data: false })        
+        chrome.runtime.sendMessage({ action: "toggleCaptureButtons", data: false }, () => {
+          if (chrome.runtime.lastError) { /* ignore */ }
+        });
         return;
       }
 
