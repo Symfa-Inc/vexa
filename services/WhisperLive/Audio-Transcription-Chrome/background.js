@@ -147,19 +147,20 @@ async function startCapture(options) {
     await setLocalStorageValue("optionTabId", optionTab.id);
     await delayExecution(500);
 
-    await sendMessageToTab(optionTab.id, {
-      type: "start_capture",
-      data: { 
-        currentTabId: currentTab.id, 
-        host: options.host, 
-        port: options.port, 
-        multilingual: options.useMultilingual,
-        language: options.language,
-        task: options.task,
-        modelSize: options.modelSize,
-        useVad: options.useVad,
-      },
-    });
+      await sendMessageToTab(optionTab.id, {
+        type: "start_capture",
+        data: { 
+          currentTabId: currentTab.id, 
+          host: options.host, 
+          port: options.port, 
+          multilingual: options.useMultilingual,
+          language: options.language,
+          task: options.task,
+          modelSize: options.modelSize,
+          useVad: options.useVad,
+          useMicrophone: options.useMicrophone,
+        },
+      });
   } catch (error) {
     console.error("Error occurred while starting capture:", error);
   }
@@ -195,6 +196,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === "stopCapture") {
     stopCapture().then(() => sendResponse({success: true}));
     return true; // Required for async sendResponse
+  } else if (message.action === "requestMicrophonePermission") {
+    // Open a temporary tab to request microphone permission
+    chrome.tabs.create({
+      url: chrome.runtime.getURL('mic-permission.html'),
+      active: true
+    }, (tab) => {
+      // Store the tab ID so we can close it later
+      chrome.storage.local.set({ micPermissionTabId: tab.id });
+      sendResponse({success: true});
+    });
+    return true;
+  } else if (message.action === "microphonePermissionGranted") {
+    // Close the permission tab
+    chrome.storage.local.get("micPermissionTabId", ({ micPermissionTabId }) => {
+      if (micPermissionTabId) {
+        chrome.tabs.remove(micPermissionTabId);
+        chrome.storage.local.remove("micPermissionTabId");
+      }
+    });
+    
+    // Notify popup that permission was granted (if it's open)
+    chrome.runtime.sendMessage({ 
+      action: "microphonePermissionGrantedNotification" 
+    }, () => {
+      if (chrome.runtime.lastError) { /* popup might be closed */ }
+    });
+    
+    sendResponse({success: true});
+    return true;
   } else if (message.action === "updateSelectedLanguage") {
     const detectedLanguage = message.detectedLanguage;
     chrome.runtime.sendMessage({ action: "updateSelectedLanguage", detectedLanguage });

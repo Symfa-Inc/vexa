@@ -5,6 +5,9 @@ document.addEventListener("DOMContentLoaded", function () {
 
   const useServerCheckbox = document.getElementById("useServerCheckbox");
   const useVadCheckbox = document.getElementById("useVadCheckbox");
+  const useMicrophoneCheckbox = document.getElementById("useMicrophoneCheckbox");
+  const requestMicPermissionBtn = document.getElementById("requestMicPermission");
+  const micPermissionStatus = document.getElementById("micPermissionStatus");
   const languageDropdown = document.getElementById('languageDropdown');
   const taskDropdown = document.getElementById('taskDropdown');
   const modelSizeDropdown = document.getElementById('modelSizeDropdown');
@@ -15,6 +18,69 @@ document.addEventListener("DOMContentLoaded", function () {
   // Add click event listeners to the buttons
   startButton.addEventListener("click", startCapture);
   stopButton.addEventListener("click", stopCapture);
+  
+  // Check microphone permission status on load
+  async function checkMicPermission() {
+    try {
+      const result = await navigator.permissions.query({ name: 'microphone' });
+      if (result.state === 'granted') {
+        micPermissionStatus.textContent = "✅ Permission granted";
+        micPermissionStatus.style.color = "green";
+        requestMicPermissionBtn.disabled = true;
+        requestMicPermissionBtn.textContent = "Permission Granted";
+      } else if (result.state === 'prompt') {
+        micPermissionStatus.textContent = "Click button to request";
+        micPermissionStatus.style.color = "#666";
+      } else {
+        micPermissionStatus.textContent = "Permission denied in browser";
+        micPermissionStatus.style.color = "red";
+      }
+      
+      // Listen for permission changes
+      result.addEventListener('change', () => {
+        if (result.state === 'granted') {
+          micPermissionStatus.textContent = "✅ Permission granted";
+          micPermissionStatus.style.color = "green";
+          requestMicPermissionBtn.disabled = true;
+          requestMicPermissionBtn.textContent = "Permission Granted";
+        }
+      });
+    } catch (error) {
+      console.warn("Could not check microphone permission:", error);
+      micPermissionStatus.textContent = "Click button to request";
+    }
+  }
+  
+  checkMicPermission();
+  
+  // Request microphone permission
+  requestMicPermissionBtn.addEventListener("click", async () => {
+    try {
+      micPermissionStatus.textContent = "Opening permission page...";
+      micPermissionStatus.style.color = "#666";
+      
+      // Send message to background to open options page for permission request
+      chrome.runtime.sendMessage({ 
+        action: "requestMicrophonePermission" 
+      }, (response) => {
+        if (response && response.success) {
+          micPermissionStatus.textContent = "✅ Permission granted!";
+          micPermissionStatus.style.color = "green";
+          requestMicPermissionBtn.disabled = true;
+          requestMicPermissionBtn.textContent = "Permission Granted";
+          // Recheck permission after a delay
+          setTimeout(checkMicPermission, 500);
+        } else {
+          micPermissionStatus.textContent = "Please allow microphone in the opened tab";
+          micPermissionStatus.style.color = "#ff9800";
+        }
+      });
+    } catch (error) {
+      console.error("Microphone permission error:", error);
+      micPermissionStatus.textContent = "❌ Error: " + error.message;
+      micPermissionStatus.style.color = "red";
+    }
+  });
 
   // Retrieve capturing state from storage on popup open
   chrome.storage.local.get("capturingState", ({ capturingState }) => {
@@ -35,6 +101,14 @@ document.addEventListener("DOMContentLoaded", function () {
   chrome.storage.local.get("useVadState", ({ useVadState }) => {
     if (useVadState !== undefined) {
       useVadCheckbox.checked = useVadState;
+    }
+  });
+
+  chrome.storage.local.get("useMicrophoneState", ({ useMicrophoneState }) => {
+    if (useMicrophoneState !== undefined) {
+      useMicrophoneCheckbox.checked = useMicrophoneState;
+    } else {
+      useMicrophoneCheckbox.checked = true; // Default to true
     }
   });
 
@@ -66,6 +140,32 @@ document.addEventListener("DOMContentLoaded", function () {
       return;
     }
 
+    // Check if microphone is enabled and permission is needed
+    if (useMicrophoneCheckbox.checked) {
+      try {
+        const result = await navigator.permissions.query({ name: 'microphone' });
+        if (result.state === 'denied' || result.state === 'prompt') {
+          // No permission - open permission page and mark that we want to auto-start
+          micPermissionStatus.textContent = "Opening permission page...";
+          micPermissionStatus.style.color = "#ff9800";
+          
+          // Store that we want to auto-start after permission
+          chrome.storage.local.set({ pendingCaptureStart: true });
+          
+          chrome.runtime.sendMessage({ 
+            action: "requestMicrophonePermission" 
+          }, (response) => {
+            micPermissionStatus.textContent = "✅ Grant permission in opened tab - capture will start automatically!";
+            micPermissionStatus.style.color = "#4CAF50";
+          });
+          return; // Don't start capture yet
+        }
+      } catch (error) {
+        console.warn("Could not check microphone permission:", error);
+        // Continue anyway
+      }
+    }
+
     // Get the current active tab
     const currentTab = await getCurrentTab();
 
@@ -88,6 +188,7 @@ document.addEventListener("DOMContentLoaded", function () {
         task: selectedTask,
         modelSize: selectedModelSize,
         useVad: useVadCheckbox.checked,
+        useMicrophone: useMicrophoneCheckbox.checked,
       }, () => {
         // Update capturing state in storage and toggle the buttons
         chrome.storage.local.set({ capturingState: { isCapturing: true } }, () => {
@@ -128,6 +229,7 @@ document.addEventListener("DOMContentLoaded", function () {
     stopButton.disabled = !isCapturing;
     useServerCheckbox.disabled = isCapturing;
     useVadCheckbox.disabled = isCapturing;
+    useMicrophoneCheckbox.disabled = isCapturing;
     modelSizeDropdown.disabled = isCapturing;
     languageDropdown.disabled = isCapturing;
     taskDropdown.disabled = isCapturing; 
@@ -144,6 +246,11 @@ document.addEventListener("DOMContentLoaded", function () {
   useVadCheckbox.addEventListener("change", () => {
     const useVadState = useVadCheckbox.checked;
     chrome.storage.local.set({ useVadState });
+  });
+
+  useMicrophoneCheckbox.addEventListener("change", () => {
+    const useMicrophoneState = useMicrophoneCheckbox.checked;
+    chrome.storage.local.set({ useMicrophoneState });
   });
 
   languageDropdown.addEventListener('change', function() {
@@ -187,6 +294,25 @@ document.addEventListener("DOMContentLoaded", function () {
         sendResponse({success: true});
       });
       return true; // Required for async sendResponse
+    } else if (request.action === "microphonePermissionGrantedNotification") {
+      // Microphone permission was granted - check if we should auto-start capture
+      checkMicPermission(); // Update UI
+      
+      chrome.storage.local.get("pendingCaptureStart", ({ pendingCaptureStart }) => {
+        if (pendingCaptureStart) {
+          chrome.storage.local.remove("pendingCaptureStart");
+          micPermissionStatus.textContent = "✅ Permission granted! Starting capture...";
+          micPermissionStatus.style.color = "green";
+          
+          // Auto-start capture after a short delay
+          setTimeout(() => {
+            startCapture();
+          }, 1000);
+        }
+      });
+      
+      sendResponse({success: true});
+      return true;
     }
     return false;
   });

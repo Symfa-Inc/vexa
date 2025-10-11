@@ -175,11 +175,15 @@ function remove_element() {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const { type, data } = request;
     
+    console.log('📥 Content.js received message, type:', type);
+    
     if (type === "STOP") {
+        console.log('🛑 Stopping transcription overlay');
         remove_element();
         sendResponse({data: "STOPPED"});
         return true;
     } else if (type === "showWaitPopup"){
+        console.log('⏰ Showing wait popup');
         initPopupElement();
 
         showPopup(`Estimated wait time ~ ${Math.round(data)} minutes`);
@@ -187,10 +191,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    console.log('📝 Processing transcript message, data length:', data?.length);
     init_element();
 
     message = JSON.parse(data);
     message = message["segments"];
+
+    // Check if segments exist and are valid
+    if (!message || !Array.isArray(message)) {
+        console.warn("⚠️ Invalid or empty segments received:", message);
+        sendResponse({});
+        return true;
+    }
+    
+    console.log(`✅ Received ${message.length} transcript segments`);
 
     var text = '';
     for (var i = 0; i < message.length; i++) {

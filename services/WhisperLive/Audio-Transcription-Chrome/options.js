@@ -78,21 +78,119 @@ function generateUUID() {
 
 
 /**
- * Starts recording audio from the captured tab.
- * @param {Object} option - The options object containing the currentTabId.
+ * Starts recording audio from the captured tab and optionally microphone.
+ * @param {Object} option - The options object containing the currentTabId and useMicrophone flag.
  */
 async function startRecord(option) {
-  const stream = await captureTabAudio();
+  const tabStream = await captureTabAudio();
   const uuid = generateUUID();
 
-  if (stream) {
+  if (tabStream) {
     // call when the stream inactive
-    stream.oninactive = () => {
+    tabStream.oninactive = () => {
       window.close();
     };
+    
+    let combinedStream = tabStream;
+    let micStream = null;
+    
+    // Capture microphone if enabled
+    if (option.useMicrophone) {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log("✅ Microphone captured successfully");
+      } catch (error) {
+        console.error("❌ Failed to capture microphone:", error.name, error.message);
+        
+        // Show user-friendly message
+        if (error.name === 'NotAllowedError') {
+          console.warn("⚠️ Microphone permission denied. Please:");
+          console.warn("   1. Open the extension popup");
+          console.warn("   2. Click 'Request Microphone Access' button");
+          console.warn("   3. Allow microphone access");
+          console.warn("   4. Try Start Capture again");
+          console.warn("📝 Continuing with tab audio only...");
+        }
+        // Continue with tab audio only
+      }
+    }
+    
+    // Setup audio processing first
+    const audioDataCache = [];
+    const context = new AudioContext();
+    
+    // Load AudioWorklet processor
+    const processorUrl = chrome.runtime.getURL('audio-processor.js');
+    console.log('Loading AudioWorklet from:', processorUrl);
+    try {
+      await context.audioWorklet.addModule(processorUrl);
+      console.log('AudioWorklet loaded successfully');
+    } catch (error) {
+      console.error('Failed to load AudioWorklet:', error);
+      throw error;
+    }
+    
+    // Create audio sources
+    const tabAudioSource = context.createMediaStreamSource(tabStream);
+    let micAudioSource = null;
+    
+    // Create a mixer node for transcription (tab + mic)
+    const transcriptionMixerNode = context.createGain();
+    transcriptionMixerNode.gain.value = 1.0;
+    
+    // Connect tab audio to transcription mixer
+    tabAudioSource.connect(transcriptionMixerNode);
+    console.log('Tab audio connected to mixer');
+    
+    // Tab audio also goes directly to speakers (for playback)
+    tabAudioSource.connect(context.destination);
+    console.log('Tab audio connected to speakers');
+    
+    // Connect microphone to transcription mixer ONLY (not to speakers - avoid feedback)
+    if (micStream) {
+      micAudioSource = context.createMediaStreamSource(micStream);
+      // Microphone goes ONLY to transcription, NOT to speakers
+      micAudioSource.connect(transcriptionMixerNode);
+      console.log("Microphone connected to transcription mixer only (no feedback to speakers)");
+    }
+    
+    // Create AudioWorkletNode instead of deprecated ScriptProcessorNode
+    const audioWorkletNode = new AudioWorkletNode(context, 'audio-capture-processor');
+    console.log('AudioWorkletNode created');
+    
+    // Connect transcription mixer to AudioWorklet for processing
+    transcriptionMixerNode.connect(audioWorkletNode);
+    console.log('Mixer connected to AudioWorklet');
+    
+    // Initialize WebSocket and state variables BEFORE setting up callbacks
     const socket = new WebSocket(`ws://${option.host}:${option.port}/`);
     let isServerReady = false;
     let language = option.language;
+    let audioFrameCount = 0;
+    
+    // Handle messages from AudioWorklet
+    audioWorkletNode.port.onmessage = (event) => {
+      if (event.data.type === 'audioData') {
+        audioFrameCount++;
+        if (audioFrameCount <= 5) {
+          console.log(`Received audio frame #${audioFrameCount} from AudioWorklet, length=${event.data.data.length}, isServerReady=${isServerReady}`);
+        }
+        
+        if (isServerReady) {
+          const inputData = event.data.data;
+          const audioData16kHz = resampleTo16kHZ(inputData, event.data.sampleRate);
+          audioDataCache.push(inputData);
+          if (audioFrameCount <= 5) {
+            console.log(`✅ Sending audio data to WebSocket, frame #${audioFrameCount}, original length: ${inputData.length}, resampled: ${audioData16kHz.length}, socket readyState: ${socket.readyState}`);
+          }
+          socket.send(audioData16kHz);
+        } else {
+          if (audioFrameCount <= 3) {
+            console.warn(`⏸️ Server not ready yet, buffering audio frame #${audioFrameCount}`);
+          }
+        }
+      }
+    };
     socket.onopen = function(e) { 
       socket.send(
         JSON.stringify({
@@ -130,6 +228,10 @@ async function startRecord(option) {
         
       if (isServerReady === false){
         isServerReady = true;
+        console.log('Server is now ready! Notifying AudioWorklet');
+        // Notify AudioWorklet that server is ready
+        audioWorkletNode.port.postMessage({ type: 'serverReady', value: true });
+        console.log('AudioWorklet notified of server ready state');
         return;
       }
       
@@ -161,28 +263,24 @@ async function startRecord(option) {
       });
     };
 
-    
-    const audioDataCache = [];
-    const context = new AudioContext();
-    const mediaStream = context.createMediaStreamSource(stream);
-    const recorder = context.createScriptProcessor(4096, 1, 1);
-
-    recorder.onaudioprocess = async (event) => {
-      if (!context || !isServerReady) return;
-
-      const inputData = event.inputBuffer.getChannelData(0);
-      const audioData16kHz = resampleTo16kHZ(inputData, context.sampleRate);
-
-      audioDataCache.push(inputData);
-
-      socket.send(audioData16kHz);
+    // Cleanup function when stream ends
+    const cleanup = () => {
+      if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+      }
+      tabStream.getTracks().forEach(track => track.stop());
+      if (audioWorkletNode) {
+        audioWorkletNode.disconnect();
+      }
+      if (context) {
+        context.close();
+      }
     };
-
-    // Prevent page mute
-    mediaStream.connect(recorder);
-    recorder.connect(context.destination);
-    mediaStream.connect(context.destination);
-    // }
+    
+    tabStream.oninactive = () => {
+      cleanup();
+      window.close();
+    };
   } else {
     window.close();
   }

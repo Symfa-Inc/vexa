@@ -19,6 +19,12 @@
     "host_permissions": [
         "<all_urls>"
     ],
+    "web_accessible_resources": [
+        {
+            "resources": ["audio-processor.js", "mic-permission.html", "mic-permission.js"],
+            "matches": ["<all_urls>"]
+        }
+    ],
     "icons": {
         "128":"icon128.png"
         },
