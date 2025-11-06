@@ -44,6 +44,11 @@ BOT_IMAGE_NAME = os.environ.get("BOT_IMAGE_NAME", "vexa-bot:dev")
 # For example, use 'cuda' for NVIDIA GPUs or 'cpu' for CPU
 DEVICE_TYPE = os.environ.get("DEVICE_TYPE", "cuda").lower()
 
+MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT")
+MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY")
+MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY")
+MINIO_BUCKET_NAME = os.environ.get("MINIO_BUCKET_NAME")
+
 logger = logging.getLogger("bot_manager.orchestrator_utils")
 
 # Global session for requests_unixsocket
@@ -199,7 +204,13 @@ async def start_bot_container(
             "noOneJoinedTimeout": 120000,
             "everyoneLeftTimeout": 60000
         },
-        "botManagerCallbackUrl": f"http://bot-manager:8080/bots/internal/callback/exited"
+        "botManagerCallbackUrl": f"http://bot-manager:8080/bots/internal/callback/exited",
+        "minio": {
+            "endpoint": MINIO_ENDPOINT,
+            "accessKey": MINIO_ACCESS_KEY,
+            "secretKey": MINIO_SECRET_KEY,
+            "bucketName": MINIO_BUCKET_NAME,
+        },
     }
     # Remove keys with None values before serializing
     cleaned_config_data = {k: v for k, v in bot_config_data.items() if v is not None}

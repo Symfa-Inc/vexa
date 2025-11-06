@@ -21,7 +21,13 @@ export const BotConfigSchema = z.object({
   }),
   reconnectionIntervalMs: z.number().int().optional(), // ADDED: Optional reconnection interval
   meeting_id: z.number().int().optional(), // Allow optional internal ID
-  botManagerCallbackUrl: z.string().url().optional() // ADDED: Optional callback URL
+  botManagerCallbackUrl: z.string().url().optional(), // ADDED: Optional callback URL
+  minio: z.object({
+    endpoint: z.string(),
+    accessKey: z.string(),
+    secretKey: z.string(),
+    bucketName: z.string(),
+  }).optional(),
 });
 
 

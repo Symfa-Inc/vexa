@@ -324,6 +324,7 @@ class MeetingCreate(BaseModel):
     language: Optional[str] = Field(None, description="Optional language code for transcription (e.g., 'en', 'es')")
     task: Optional[str] = Field(None, description="Optional task for the transcription model (e.g., 'transcribe', 'translate')")
     passcode: Optional[str] = Field(None, description="Optional passcode for the meeting (Teams only)")
+    title: Optional[str] = Field(None, description="Optional title of the meeting")
 
     @validator('platform')
     def platform_must_be_valid(cls, v):

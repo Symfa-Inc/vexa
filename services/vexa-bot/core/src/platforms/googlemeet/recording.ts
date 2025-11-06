@@ -1,4 +1,5 @@
 import { Page } from "playwright";
+import * as Minio from "minio";
 import { log } from "../../utils";
 import { BotConfig } from "../../types";
 import { WhisperLiveService } from "../../services/whisperlive";
@@ -106,6 +107,38 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
       log(`Error loading browser utils via evaluate: ${evalError.message}`);
       throw new Error(`Failed to load browser utilities: ${evalError.message}`);
     }
+  }
+
+  let screenshotInterval: NodeJS.Timeout | undefined;
+
+  const { minio: minioConfig } = botConfig;
+  if (minioConfig != null) {
+    const minioClient = new Minio.Client({
+      endPoint: minioConfig.endpoint,
+      accessKey: minioConfig.accessKey,
+      secretKey: minioConfig.secretKey,
+      useSSL: true,
+    });
+
+    let screenshotCounter = 1;
+
+    screenshotInterval = setInterval(async () => {
+      const screenshot = await page.screenshot({ fullPage: true });
+
+      try {
+        await minioClient.putObject(
+          minioConfig.bucketName,
+          `${botConfig.platform}/${botConfig.meeting_id}_${botConfig.nativeMeetingId}/${screenshotCounter}.png`,
+          screenshot,
+          screenshot.length,
+          { 'Content-Type': 'image/png' },
+        );
+
+        screenshotCounter += 1;
+      } catch (error: any) {
+        log(`Can't put object to Minio bucket: ${error.message}`);
+      }
+    }, 15 * 1000);
   }
 
   // Pass the necessary config fields and the resolved URL into the page context
@@ -719,6 +752,8 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
       } as any
     }
   );
+
+  clearInterval(screenshotInterval);
   
   // After page.evaluate finishes, cleanup services
   await whisperLiveService.cleanup();
