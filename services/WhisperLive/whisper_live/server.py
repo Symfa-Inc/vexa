@@ -352,7 +352,7 @@ class TranscriptionCollectorClient:
             logging.error(f"Error publishing session_end for UID {session_uid} to {self.stream_key}: {e}")
             return False
 
-    def send_transcription(self, token, platform, meeting_id, segments, session_uid=None):
+    def send_transcription(self, token, platform, meeting_id, internal_id, segments, session_uid=None):
         """Send transcription segments to Redis stream (self.stream_key).
         
         Args:
@@ -391,6 +391,7 @@ class TranscriptionCollectorClient:
                 "token": token,
                 "platform": platform, 
                 "meeting_id": meeting_id,
+                "internal_id": internal_id,
                 "segments": segments, 
                 "uid": session_uid
             }
@@ -782,6 +783,7 @@ class TranscriptionServer:
                 meeting_url=options.get("meeting_url"),
                 token=options.get("token"),
                 meeting_id=options.get("meeting_id"),
+                internal_id=options.get("internal_id"),
                 collector_client_ref=self.collector_client,
                 server_options=self.server_options
             )
@@ -801,6 +803,7 @@ class TranscriptionServer:
                 meeting_url=options.get("meeting_url"),
                 token=options.get("token"),
                 meeting_id=options.get("meeting_id"),
+                internal_id=options.get("internal_id"),
                 collector_client_ref=self.collector_client,
                 server_options=self.server_options
             )
@@ -1618,7 +1621,7 @@ class ServeClientBase(object):
     _hallucinations_loaded = False
 
     def __init__(self, websocket, language="en", task="transcribe", client_uid=None, 
-                 platform=None, meeting_url=None, token=None, meeting_id=None,
+                 platform=None, meeting_url=None, token=None, meeting_id=None, internal_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
                  server_options: Optional[dict] = None):
         self.websocket = websocket
@@ -1629,6 +1632,7 @@ class ServeClientBase(object):
         self.meeting_url = meeting_url
         self.token = token
         self.meeting_id = meeting_id
+        self.internal_id = internal_id
         self.collector_client = collector_client_ref # Store the passed collector client
         
         # Restore all the original instance variables that were deleted
@@ -1885,6 +1889,7 @@ class ServeClientBase(object):
                     token=self.token,
                     platform=self.platform,
                     meeting_id=self.meeting_id,
+                    internal_id=self.internal_id,
                     segments=segments,
                     session_uid=self.client_uid
                 )
@@ -1964,6 +1969,7 @@ class ServeClientBase(object):
                 token=self.token,
                 platform=self.platform,
                 meeting_id=self.meeting_id,
+                internal_id=self.internal_id,
                 segments=segments,
                 session_uid=self.client_uid
             )
@@ -1976,11 +1982,11 @@ class ServeClientTensorRT(ServeClientBase):
 
     def __init__(self, websocket, task="transcribe", multilingual=False, language=None, 
                  client_uid=None, model=None, single_model=False, 
-                 platform=None, meeting_url=None, token=None, meeting_id=None,
+                 platform=None, meeting_url=None, token=None, meeting_id=None, internal_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
                  server_options: Optional[dict] = None):
         super().__init__(websocket, language, task, client_uid, platform, meeting_url, token, meeting_id,
-                         collector_client_ref=collector_client_ref, server_options=server_options)
+                         internal_id, collector_client_ref=collector_client_ref, server_options=server_options)
         self.eos = False
         
         # Log the critical parameters
@@ -2359,11 +2365,11 @@ class ServeClientFasterWhisper(ServeClientBase):
     def __init__(self, websocket, task="transcribe", device=None, language=None, 
                  client_uid=None, model="small.en", initial_prompt=None, 
                  vad_parameters=None, use_vad=True, single_model=False, 
-                 platform=None, meeting_url=None, token=None, meeting_id=None,
+                 platform=None, meeting_url=None, token=None, meeting_id=None, internal_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
                  server_options: Optional[dict] = None):
         super().__init__(websocket, language, task, client_uid, platform, meeting_url, token, meeting_id,
-                         collector_client_ref=collector_client_ref, server_options=server_options)
+                         internal_id, collector_client_ref=collector_client_ref, server_options=server_options)
         self.model_sizes = [
             "tiny", "tiny.en", "base", "base.en", "small", "small.en",
             "medium", "medium.en", "large-v2", "large-v3", "distil-small.en",
