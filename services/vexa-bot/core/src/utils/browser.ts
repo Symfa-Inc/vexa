@@ -290,6 +290,7 @@ export class BrowserWhisperLiveService {
           token: this.botConfigData.token,
           meeting_id: this.botConfigData.nativeMeetingId,
           meeting_url: this.botConfigData.meetingUrl || null,
+          internal_id: this.botConfigData.meeting_id,
         };
 
         (window as any).logBot(`Sending initial config message: ${JSON.stringify(configPayload)}`);
@@ -336,6 +337,7 @@ export class BrowserWhisperLiveService {
           token: this.botConfigData.token,
           meeting_id: this.botConfigData.nativeMeetingId,
           meeting_url: this.botConfigData.meetingUrl || null,
+          internal_id: this.botConfigData.meeting_id,
         };
 
         (window as any).logBot(`Sending initial config message: ${JSON.stringify(configPayload)}`);
