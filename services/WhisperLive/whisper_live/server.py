@@ -102,6 +102,9 @@ class TranscriptionCollectorClient:
         # Stream key for speaker events (NEW)
         self.speaker_events_stream_key = os.getenv("REDIS_SPEAKER_EVENTS_RELATIVE_STREAM_KEY", "speaker_events_relative")
         
+        # Maximum length for Redis streams (to prevent unlimited growth)
+        self.stream_maxlen = int(os.getenv("REDIS_STREAM_MAX_LEN", "100000"))
+        
         # Track session_uids for which we've published session_start events
         self.session_starts_published = set()
         
@@ -241,7 +244,9 @@ class TranscriptionCollectorClient:
             
             result = self.redis_client.xadd(
                 self.stream_key,
-                message
+                message,
+                maxlen=self.stream_maxlen,
+                approximate=True
             )
             
             if result:
@@ -290,7 +295,9 @@ class TranscriptionCollectorClient:
             
             result = self.redis_client.xadd(
                 self.speaker_events_stream_key,
-                redis_message_payload 
+                redis_message_payload,
+                maxlen=self.stream_maxlen,
+                approximate=True
             )
             
             if result:
@@ -338,7 +345,12 @@ class TranscriptionCollectorClient:
                 "end_timestamp": timestamp_iso
             }
             message = {"payload": json.dumps(payload)}
-            result = self.redis_client.xadd(self.stream_key, message)
+            result = self.redis_client.xadd(
+                self.stream_key, 
+                message,
+                maxlen=self.stream_maxlen,
+                approximate=True
+            )
             if result:
                 logging.info(f"Published session_end event for UID {session_uid} to {self.stream_key}")
                 # Remove from published starts if present, as session is now considered ended
@@ -402,7 +414,9 @@ class TranscriptionCollectorClient:
             
             result = self.redis_client.xadd(
                 self.stream_key, 
-                message
+                message,
+                maxlen=self.stream_maxlen,
+                approximate=True
             )
             
             if result:
