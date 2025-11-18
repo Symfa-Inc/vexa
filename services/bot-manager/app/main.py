@@ -337,7 +337,7 @@ async def request_bot(
         Meeting.user_id == current_user.id,
         Meeting.platform == req.platform.value,
         Meeting.platform_specific_id == native_meeting_id,
-        Meeting.status.in_(['requested', 'active']) # Do NOT block on 'stopping' to allow immediate new bot
+        Meeting.status.in_(['requested', 'joining', 'active']) # Do NOT block on 'stopping' to allow immediate new bot
     ).order_by(desc(Meeting.created_at)).limit(1) # Get the latest one if multiple somehow exist
     
     result = await db.execute(existing_meeting_stmt)
