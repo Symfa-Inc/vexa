@@ -17,4 +17,10 @@ export type BotConfig = {
   reconnectionIntervalMs?: number,
   meeting_id?: number,
   botManagerCallbackUrl?: string;
+  minio?: {
+    endpoint: string;
+    accessKey: string;
+    secretKey: string;
+    bucketName: string;
+  };
 }
