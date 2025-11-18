@@ -1647,7 +1647,13 @@ class ServeClientBase(object):
         self.websocket = websocket
         self.language = language
         self.task = task
-        self.client_uid = client_uid or str(uuid.uuid4())
+        # Use provided client_uid if it's a non-empty string, otherwise generate new UUID
+        if client_uid and isinstance(client_uid, str) and client_uid.strip():
+            self.client_uid = client_uid
+        else:
+            self.client_uid = str(uuid.uuid4())
+            if client_uid is not None:
+                logging.warning(f"Provided client_uid '{client_uid}' is empty or invalid, generated new UUID: {self.client_uid}")
         self.platform = platform
         self.meeting_url = meeting_url
         self.token = token
@@ -1689,7 +1695,7 @@ class ServeClientBase(object):
         
         # Send SERVER_READY message
         ready_message = json.dumps({"status": self.SERVER_READY, "uid": self.client_uid})
-        logging.info(f"Client {self.client_uid} connected. Sending SERVER_READY.")
+        logging.info(f"Client {self.client_uid} connected. Sending SERVER_READY. (platform={platform}, meeting_id={meeting_id})")
         self.websocket.send(ready_message)
         
         # Use the instance's self.collector_client
