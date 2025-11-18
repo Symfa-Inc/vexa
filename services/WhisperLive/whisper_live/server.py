@@ -790,7 +790,7 @@ class TranscriptionServer:
         
         # tensorrt client
         if backend.is_tensorrt():
-            client = ServeClientTensorRT(
+                client = ServeClientTensorRT(
                 websocket,
                 multilingual=self.trt_multilingual,
                 language=options.get("language"),
@@ -803,7 +803,8 @@ class TranscriptionServer:
                 token=options.get("token"),
                 meeting_id=options.get("meeting_id"),
                 collector_client_ref=self.collector_client,
-                server_options=self.server_options
+                server_options=self.server_options,
+                upload_audio=options.get("upload_audio", False)
             )
         # faster-whisper client
         else:
@@ -822,7 +823,8 @@ class TranscriptionServer:
                 token=options.get("token"),
                 meeting_id=options.get("meeting_id"),
                 collector_client_ref=self.collector_client,
-                server_options=self.server_options
+                server_options=self.server_options,
+                upload_audio=options.get("upload_audio", False)
             )
         self.client_manager.add_client(websocket, client)
         logging.info(f"Added client {client.client_uid}, total clients: {len(self.client_manager.clients)}")
@@ -1643,7 +1645,7 @@ class ServeClientBase(object):
     def __init__(self, websocket, language="en", task="transcribe", client_uid=None, 
                  platform=None, meeting_url=None, token=None, meeting_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
-                 server_options: Optional[dict] = None):
+                 server_options: Optional[dict] = None, upload_audio: bool = False):
         self.websocket = websocket
         self.language = language
         self.task = task
@@ -1675,6 +1677,7 @@ class ServeClientBase(object):
         self.exit = False
         self.same_output_count = 0
         self._cleanup_called = False  # Flag to prevent double cleanup
+        self.upload_audio = upload_audio  # Flag to enable/disable audio upload to MinIO
 
         server_options = server_options or {}
         self.max_buffer_s = server_options.get("max_buffer_s", 45)
@@ -1695,7 +1698,7 @@ class ServeClientBase(object):
         
         # Send SERVER_READY message
         ready_message = json.dumps({"status": self.SERVER_READY, "uid": self.client_uid})
-        logging.info(f"Client {self.client_uid} connected. Sending SERVER_READY. (platform={platform}, meeting_id={meeting_id})")
+        logging.info(f"Client {self.client_uid} connected. Sending SERVER_READY. (platform={platform}, meeting_id={meeting_id}, upload_audio={self.upload_audio})")
         self.websocket.send(ready_message)
         
         # Use the instance's self.collector_client
@@ -2156,11 +2159,14 @@ class ServeClientBase(object):
         self._cleanup_called = True
         logging.info(f"Cleaning up client {self.client_uid}.")
         
-        # Save and upload audio to MinIO before cleanup
-        try:
-            self._save_and_upload_audio()
-        except Exception as e:
-            logging.error(f"Error saving/uploading audio during cleanup: {e}")
+        # Save and upload audio to MinIO before cleanup (only if enabled and MinIO is configured)
+        if self.upload_audio:
+            try:
+                self._save_and_upload_audio()
+            except Exception as e:
+                logging.error(f"Error saving/uploading audio during cleanup: {e}")
+        else:
+            logging.debug(f"Audio upload disabled for client {self.client_uid} (upload_audio=False)")
         
         self.exit = True
 
@@ -2186,9 +2192,9 @@ class ServeClientTensorRT(ServeClientBase):
                  client_uid=None, model=None, single_model=False, 
                  platform=None, meeting_url=None, token=None, meeting_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
-                 server_options: Optional[dict] = None):
+                 server_options: Optional[dict] = None, upload_audio: bool = False):
         super().__init__(websocket, language, task, client_uid, platform, meeting_url, token, meeting_id,
-                         collector_client_ref=collector_client_ref, server_options=server_options)
+                         collector_client_ref=collector_client_ref, server_options=server_options, upload_audio=upload_audio)
         self.eos = False
         
         # Log the critical parameters
@@ -2569,9 +2575,9 @@ class ServeClientFasterWhisper(ServeClientBase):
                  vad_parameters=None, use_vad=True, single_model=False, 
                  platform=None, meeting_url=None, token=None, meeting_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
-                 server_options: Optional[dict] = None):
+                 server_options: Optional[dict] = None, upload_audio: bool = False):
         super().__init__(websocket, language, task, client_uid, platform, meeting_url, token, meeting_id,
-                         collector_client_ref=collector_client_ref, server_options=server_options)
+                         collector_client_ref=collector_client_ref, server_options=server_options, upload_audio=upload_audio)
         self.model_sizes = [
             "tiny", "tiny.en", "base", "base.en", "small", "small.en",
             "medium", "medium.en", "large-v2", "large-v3", "distil-small.en",
