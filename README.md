@@ -163,7 +163,216 @@ For **security-minded companies**, Vexa offers complete **self-deployment** opti
 
 To run Vexa locally on your own infrastructure, the primary command you'll use after cloning the repository is `make all`. This command sets up the environment (CPU by default, or GPU if specified), builds all necessary Docker images, and starts the services.
 
-Detailed instructions: [Local Deployment and Testing Guide](DEPLOYMENT.md).
+### Quick Start with Docker Compose
+
+Follow these steps to deploy Vexa on your own infrastructure:
+
+#### Prerequisites
+
+- **Docker** (version 20.10+) and **Docker Compose** (version 2.0+)
+- **Git** for cloning the repository
+- At least **4GB RAM** for CPU version (8GB+ recommended for GPU)
+- **50GB disk space** for models and logs
+
+#### Step-by-Step Deployment
+
+**1. Clone the repository:**
+
+```bash
+git clone https://github.com/Vexa-ai/vexa.git
+cd vexa
+```
+
+**2. Choose your deployment mode:**
+
+**Option A: Quick Start with Make (Recommended)**
+
+**CPU Mode (Development/Testing):**
+
+```bash
+# Set up environment and download models
+make all TARGET=cpu
+
+# This will automatically:
+# - Copy environment configuration from env-example.cpu
+# - Download Whisper models (tiny by default for CPU)
+# - Build vexa-bot image
+# - Build all Docker images
+# - Start all services
+```
+
+**GPU Mode (Production - requires NVIDIA GPU):**
+
+```bash
+# Set up environment and download models
+make all TARGET=gpu
+
+# This will automatically:
+# - Copy environment configuration from env-example.gpu
+# - Download Whisper models (medium by default for GPU)
+# - Build vexa-bot image with GPU support
+# - Build all Docker images with GPU support
+# - Start all services
+```
+
+**Option B: Manual Step-by-Step with Docker Compose**
+
+If you prefer manual control or need to customize the build process:
+
+**CPU Mode:**
+
+```bash
+# 1. Copy environment configuration
+cp env-example.cpu .env
+
+# 2. Download Whisper models (optional, will download on first use)
+python download_model.py
+
+# 3. Build the vexa-bot image (REQUIRED before docker-compose)
+make build-bot-image
+
+# 4. Build and start all services with docker-compose
+docker-compose --profile cpu build
+docker-compose --profile cpu up -d
+
+# 5. Initialize database
+make migrate-or-init
+```
+
+**GPU Mode:**
+
+```bash
+# 1. Copy environment configuration
+cp env-example.gpu .env
+
+# 2. Download Whisper models
+python download_model.py
+
+# 3. Build the vexa-bot image (REQUIRED before docker-compose)
+make build-bot-image
+
+# 4. Build and start all services with docker-compose
+docker-compose --profile gpu build
+docker-compose --profile gpu up -d
+
+# 5. Initialize database
+make migrate-or-init
+```
+
+> **Important:** The `vexa-bot` image must be built separately using `make build-bot-image` before running `docker-compose up`, as bot-manager dynamically creates bot containers from this pre-built image.
+
+**3. Verify services are running:**
+
+```bash
+docker-compose ps
+
+# You should see these services running:
+# - api-gateway (port 8056)
+# - admin-api (port 8057)
+# - bot-manager
+# - transcription-collector (port 8123)
+# - whisperlive-cpu (CPU mode) or whisperlive (GPU mode)
+# - redis
+# - postgres
+# - mcp (port 18888)
+```
+
+**4. Check service health:**
+
+```bash
+# Check API Gateway
+curl http://localhost:18056/health
+
+# Check Admin API
+curl http://localhost:18057/health
+
+# Check Transcription Collector
+curl http://localhost:18123/health
+```
+
+**5. Create your first API key:**
+
+Follow the notebook at `nbs/0_basic_test.ipynb` or use the Admin API directly:
+
+```bash
+# Create a user and get API key
+# See nbs/0_basic_test.ipynb for detailed examples
+```
+
+**6. Test the deployment:**
+
+```bash
+# Send a bot to a Google Meet
+curl -X POST http://localhost:18056/bots \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -d '{
+    "platform": "google_meet",
+    "native_meeting_id": "xxx-xxxx-xxx"
+  }'
+
+# Get transcripts
+curl -H "X-API-Key: YOUR_API_KEY" \
+  "http://localhost:18056/transcripts/google_meet/xxx-xxxx-xxx"
+```
+
+#### Important Configuration Notes
+
+**For Production Deployment:**
+
+1. **Update `docker-compose.yml` for production:**
+
+   - Set appropriate `WHISPER_MODEL_SIZE` (small, medium, large)
+   - Configure proper logging levels (`LOG_LEVEL=INFO` or `WARNING`)
+2. **Security considerations:**
+
+   - Change default database passwords
+   - Use secure API tokens
+   - Configure firewall rules
+   - Set up HTTPS/TLS for external access
+3. **Resource allocation:**
+
+   - CPU: 4+ cores recommended
+   - RAM: 8GB minimum, 16GB+ for production
+   - GPU: NVIDIA GPU with 8GB+ VRAM for optimal performance
+
+#### Troubleshooting
+
+**Services not starting:**
+
+```bash
+# Check logs
+docker-compose logs -f <service-name>
+
+# Common issues:
+# - Port conflicts: Change ports in docker-compose.yml
+# - Insufficient resources: Check Docker resource limits
+# - Missing models: Run `python download_model.py`
+```
+
+**Transcription not working through bot:**
+
+```bash
+# Verify WhisperLive is accessible
+docker-compose exec bot-manager curl -I http://whisperlive-cpu:9091
+
+# Check bot logs
+docker-compose logs -f | grep -i whisper
+
+# Ensure WHISPER_LIVE_URL includes port :9090
+```
+
+**Database connection issues:**
+
+```bash
+# Wait for database to be ready
+docker-compose logs postgres | grep "ready to accept connections"
+
+# Run migrations if needed
+make migrate-or-init
+```
+
+For comprehensive deployment instructions, monitoring setup, and advanced configuration, see the [Local Deployment and Testing Guide](DEPLOYMENT.md).
 
 ## Updating Your Build After Code Changes
 
@@ -184,19 +393,20 @@ make build-bot-image
 
 ### Service-Specific Updates
 
-| Changed Service | Command |
-|----------------|---------|
-| **vexa-bot** (bot code) | `make build-bot-image` |
-| **transcription-collector** | `docker-compose up --build -d transcription-collector` |
-| **bot-manager** | `docker-compose up --build -d bot-manager` |
-| **WhisperLive** (CPU) | `docker-compose --profile cpu up --build -d whisperlive-cpu` |
-| **WhisperLive** (GPU) | `docker-compose --profile gpu up --build -d whisperlive` |
-| **api-gateway** | `docker-compose up --build -d api-gateway` |
-| **admin-api** | `docker-compose up --build -d admin-api` |
+| Changed Service                   | Command                                                        |
+| --------------------------------- | -------------------------------------------------------------- |
+| **vexa-bot** (bot code)     | `make build-bot-image`                                       |
+| **transcription-collector** | `docker-compose up --build -d transcription-collector`       |
+| **bot-manager**             | `docker-compose up --build -d bot-manager`                   |
+| **WhisperLive** (CPU)       | `docker-compose --profile cpu up --build -d whisperlive-cpu` |
+| **WhisperLive** (GPU)       | `docker-compose --profile gpu up --build -d whisperlive`     |
+| **api-gateway**             | `docker-compose up --build -d api-gateway`                   |
+| **admin-api**               | `docker-compose up --build -d admin-api`                     |
 
 ### Common Workflows
 
 **Quick iteration during development:**
+
 ```bash
 # After making changes
 docker-compose up --build -d <service-name>
@@ -206,6 +416,7 @@ docker-compose logs -f <service-name>
 ```
 
 **Full rebuild (when dependencies change):**
+
 ```bash
 # Stop everything
 make down
@@ -221,6 +432,7 @@ make migrate-or-init
 ```
 
 **Force rebuild without cache:**
+
 ```bash
 # Use when Docker cache causes issues
 docker-compose build --no-cache <service-name>

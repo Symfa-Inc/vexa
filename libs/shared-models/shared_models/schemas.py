@@ -301,24 +301,21 @@ class UserUpdate(BaseModel):
 # --- Meeting Schemas --- 
 
 class MeetingBase(BaseModel):
-    platform: Platform = Field(..., description="Platform identifier (e.g., 'google_meet', 'teams')")
+    platform: str = Field(..., description="Platform identifier (e.g., 'google_meet', 'teams', or any custom platform)")
     native_meeting_id: str = Field(..., description="The native meeting identifier (e.g., 'abc-defg-hij' for Google Meet, '1234567890' for Teams)")
     # meeting_url field removed
 
     @validator('platform', pre=True) # pre=True allows validating string before enum conversion
     def validate_platform_str(cls, v):
-        """Validate that the platform string is one of the supported platforms"""
-        try:
-            Platform(v)
-            return v
-        except ValueError:
-            supported = ', '.join([p.value for p in Platform])
-            raise ValueError(f"Invalid platform '{v}'. Must be one of: {supported}")
+        """Validate that the platform is a non-empty string. Accepts any platform string, including custom platforms."""
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("Platform must be a non-empty string")
+        return v.strip()
 
     # Removed get_bot_platform method, use Platform.get_bot_name(self.platform.value) if needed
 
 class MeetingCreate(BaseModel):
-    platform: Platform
+    platform: str = Field(..., description="Platform identifier (e.g., 'google_meet', 'teams', or any custom platform)")
     native_meeting_id: str = Field(..., description="The platform-specific ID for the meeting (e.g., Google Meet code, Teams ID)")
     bot_name: Optional[str] = Field(None, description="Optional name for the bot in the meeting")
     language: Optional[str] = Field(None, description="Optional language code for transcription (e.g., 'en', 'es')")
@@ -327,25 +324,28 @@ class MeetingCreate(BaseModel):
 
     @validator('platform')
     def platform_must_be_valid(cls, v):
-        """Validate that the platform is one of the supported platforms"""
-        try:
-            Platform(v)
-            return v
-        except ValueError:
-            supported = ', '.join([p.value for p in Platform])
-            raise ValueError(f"Invalid platform '{v}'. Must be one of: {supported}")
+        """Validate that the platform is a non-empty string. Accepts any platform string, including custom platforms."""
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("Platform must be a non-empty string")
+        return v.strip()
 
     @validator('passcode')
     def validate_passcode(cls, v, values):
         """Validate passcode usage based on platform"""
         if v is not None and v != "":
             platform = values.get('platform')
-            if platform == Platform.GOOGLE_MEET:
-                raise ValueError("Passcode is not supported for Google Meet meetings")
-            elif platform == Platform.TEAMS:
-                # Teams passcode validation (alphanumeric, reasonable length)
-                if not re.match(r'^[A-Za-z0-9]{8,20}$', v):
-                    raise ValueError("Teams passcode must be 8-20 alphanumeric characters")
+            # Only validate for known platforms, allow custom platforms to use passcode
+            try:
+                platform_enum = Platform(platform)
+                if platform_enum == Platform.GOOGLE_MEET:
+                    raise ValueError("Passcode is not supported for Google Meet meetings")
+                elif platform_enum == Platform.TEAMS:
+                    # Teams passcode validation (alphanumeric, reasonable length)
+                    if not re.match(r'^[A-Za-z0-9]{8,20}$', v):
+                        raise ValueError("Teams passcode must be 8-20 alphanumeric characters")
+            except ValueError:
+                # Custom platform - allow passcode without format validation
+                pass
         return v
 
     @validator('language')
@@ -364,7 +364,7 @@ class MeetingCreate(BaseModel):
 
     @validator('native_meeting_id')
     def validate_native_meeting_id(cls, v, values):
-        """Validate that the native meeting ID matches the expected format for the platform."""
+        """Validate that the native meeting ID matches the expected format for known platforms. Custom platforms are not validated."""
         if not v or not v.strip():
             raise ValueError("native_meeting_id cannot be empty")
         
@@ -372,29 +372,40 @@ class MeetingCreate(BaseModel):
         if not platform:
             return v  # Let platform validator handle this case
         
-        platform = Platform(platform)
         native_id = v.strip()
         
-        if platform == Platform.GOOGLE_MEET:
-            # Google Meet format: abc-defg-hij
-            if not re.fullmatch(r"^[a-z]{3}-[a-z]{4}-[a-z]{3}$", native_id):
-                raise ValueError("Google Meet ID must be in format 'abc-defg-hij' (lowercase letters only)")
-        
-        elif platform == Platform.TEAMS:
-            # Teams format: numeric ID only (10-15 digits)
-            if not re.fullmatch(r"^\d{10,15}$", native_id):
-                raise ValueError("Teams meeting ID must be 10-15 digits only (not a full URL)")
+        # Only validate format for known platforms
+        try:
+            platform_enum = Platform(platform)
             
-            # Explicitly reject full URLs
-            if native_id.startswith(('http://', 'https://', 'teams.microsoft.com', 'teams.live.com')):
-                raise ValueError("Teams meeting ID must be the numeric ID only (e.g., '9399697580372'), not a full URL")
+            if platform_enum == Platform.GOOGLE_MEET:
+                # Google Meet format: abc-defg-hij
+                if not re.fullmatch(r"^[a-z]{3}-[a-z]{4}-[a-z]{3}$", native_id):
+                    raise ValueError("Google Meet ID must be in format 'abc-defg-hij' (lowercase letters only)")
+            
+            elif platform_enum == Platform.TEAMS:
+                # Teams format: numeric ID only (10-15 digits)
+                if not re.fullmatch(r"^\d{10,15}$", native_id):
+                    raise ValueError("Teams meeting ID must be 10-15 digits only (not a full URL)")
+                
+                # Explicitly reject full URLs
+                if native_id.startswith(('http://', 'https://', 'teams.microsoft.com', 'teams.live.com')):
+                    raise ValueError("Teams meeting ID must be the numeric ID only (e.g., '9399697580372'), not a full URL")
+        except ValueError as e:
+            # If it's a Platform enum ValueError, it's a custom platform - skip format validation
+            if "is not a valid Platform" in str(e):
+                # Custom platform - no format validation
+                pass
+            else:
+                # Re-raise validation errors for known platforms
+                raise
         
         return v
 
 class MeetingResponse(BaseModel): # Not inheriting from MeetingBase anymore to avoid duplicate fields if DB model is used directly
     id: int = Field(..., description="Internal database ID for the meeting")
     user_id: int
-    platform: Platform # Use the enum type
+    platform: str # Platform identifier (can be known platform or custom)
     native_meeting_id: Optional[str] = Field(None, description="The native meeting identifier provided during creation") # Renamed from platform_specific_id for clarity
     constructed_meeting_url: Optional[str] = Field(None, description="The meeting URL constructed internally, if possible") # Added for info
     status: MeetingStatus = Field(..., description="Current meeting status")
@@ -517,7 +528,7 @@ class TranscriptionSegment(BaseModel):
 class WhisperLiveData(BaseModel):
     """Schema for the data message sent by WhisperLive to the collector."""
     uid: str # Unique identifier from the original client connection
-    platform: Platform
+    platform: str = Field(..., description="Platform identifier (e.g., 'google_meet', 'teams', or any custom platform)")
     meeting_url: Optional[str] = None
     token: str # User API token
     meeting_id: str # Native Meeting ID (string, e.g., 'abc-xyz-pqr')
@@ -525,20 +536,17 @@ class WhisperLiveData(BaseModel):
 
     @validator('platform', pre=True)
     def validate_whisperlive_platform_str(cls, v):
-        """Validate that the platform string is one of the supported platforms"""
-        try:
-            Platform(v)
-            return v
-        except ValueError:
-            supported = ', '.join([p.value for p in Platform])
-            raise ValueError(f"Invalid platform '{v}'. Must be one of: {supported}")
+        """Validate that the platform is a non-empty string. Accepts any platform string, including custom platforms."""
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("Platform must be a non-empty string")
+        return v.strip()
 
 # --- Other Schemas ---
 class TranscriptionResponse(BaseModel): # Doesn't inherit MeetingResponse to avoid redundancy if joining data
     """Response for getting a meeting's transcript."""
     # Meeting details (consider duplicating fields from MeetingResponse or nesting)
     id: int = Field(..., description="Internal database ID for the meeting")
-    platform: Platform
+    platform: str
     native_meeting_id: Optional[str]
     constructed_meeting_url: Optional[str]
     status: str
@@ -616,7 +624,7 @@ class MeetingTableResponse(BaseModel):
     """Meeting data for analytics table - excludes sensitive fields"""
     id: int
     user_id: int
-    platform: Platform
+    platform: str
     native_meeting_id: Optional[str]
     status: MeetingStatus
     start_time: Optional[datetime]

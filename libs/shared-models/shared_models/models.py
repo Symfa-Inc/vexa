@@ -41,14 +41,15 @@ class Meeting(Base):
     platform_specific_id = Column(String(255), index=True, nullable=True)
     status = Column(String(50), nullable=False, default='requested', index=True)  # Values: requested, joining, awaiting_admission, active, completed, failed
     bot_container_id = Column(String(255), nullable=True)
-    start_time = Column(DateTime, nullable=True)
-    end_time = Column(DateTime, nullable=True)
+    start_time = Column(sqlalchemy.DateTime(timezone=True), nullable=True)
+    end_time = Column(sqlalchemy.DateTime(timezone=True), nullable=True)
     data = Column(JSONB, nullable=False, default=text("'{}'::jsonb"))
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="meetings")
-    transcriptions = relationship("Transcription", back_populates="meeting")
+    transcriptions = relationship("Transcription", back_populates="meeting", cascade="all, delete-orphan")
+    transcription_notes = relationship("TranscriptionNote", back_populates="meeting", cascade="all, delete-orphan")
     sessions = relationship("MeetingSession", back_populates="meeting", cascade="all, delete-orphan")
 
     # Add composite index for efficient lookup by user, platform, and native ID, including created_at for sorting
@@ -80,11 +81,10 @@ class Meeting(Base):
         if self.platform and self.platform_specific_id:
              return Platform.construct_meeting_url(self.platform, self.platform_specific_id)
         return None
-
-class Transcription(Base):
-    __tablename__ = "transcriptions"
+    
+class TranscriptionBase():
     id = Column(Integer, primary_key=True, index=True)
-    meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False, index=True) # Changed nullable to False, should always link
+    meeting_id = Column(Integer, ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True) # Changed nullable to False, should always link
     # Removed redundant platform, meeting_url, token, client_uid, server_id as they belong to the Meeting
     start_time = Column(Float, nullable=False)
     end_time = Column(Float, nullable=False)
@@ -92,19 +92,26 @@ class Transcription(Base):
     speaker = Column(String(255), nullable=True) # Speaker identifier
     language = Column(String(10), nullable=True) # e.g., 'en', 'es'
     created_at = Column(DateTime, default=datetime.utcnow)
+    session_uid = Column(String, nullable=True, index=True) # Link to the specific bot session
+
+class Transcription(Base, TranscriptionBase):
+    __tablename__ = "transcriptions"
 
     meeting = relationship("Meeting", back_populates="transcriptions")
-    
-    session_uid = Column(String, nullable=True, index=True) # Link to the specific bot session
 
     # Index for efficient querying by meeting_id and start_time
     __table_args__ = (Index('ix_transcription_meeting_start', 'meeting_id', 'start_time'),)
+
+class TranscriptionNote(Base, TranscriptionBase):
+    __tablename__ = "transcription_notes"
+
+    meeting = relationship("Meeting", back_populates="transcription_notes")
 
 # New table to store session start times
 class MeetingSession(Base):
     __tablename__ = 'meeting_sessions'
     id = Column(Integer, primary_key=True, index=True)
-    meeting_id = Column(Integer, ForeignKey('meetings.id'), nullable=False, index=True)
+    meeting_id = Column(Integer, ForeignKey('meetings.id', ondelete="CASCADE"), nullable=False, index=True)
     session_uid = Column(String, nullable=False, index=True) # Stores the 'uid' (based on connectionId)
     # Store timezone-aware timestamp to avoid ambiguity
     session_start_time = Column(sqlalchemy.DateTime(timezone=True), nullable=False, server_default=func.now())
