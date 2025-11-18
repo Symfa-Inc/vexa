@@ -33,6 +33,12 @@ import threading
 import redis
 import uuid
 
+# Import for MinIO and audio file handling
+import wave
+import tempfile
+from minio import Minio
+from minio.error import S3Error
+
 # Setup basic logging (env-driven)
 _WL_LOG_LEVEL = os.getenv("WL_LOG_LEVEL", "INFO").strip().upper()
 try:
@@ -784,7 +790,7 @@ class TranscriptionServer:
         
         # tensorrt client
         if backend.is_tensorrt():
-            client = ServeClientTensorRT(
+                client = ServeClientTensorRT(
                 websocket,
                 multilingual=self.trt_multilingual,
                 language=options.get("language"),
@@ -797,7 +803,8 @@ class TranscriptionServer:
                 token=options.get("token"),
                 meeting_id=options.get("meeting_id"),
                 collector_client_ref=self.collector_client,
-                server_options=self.server_options
+                server_options=self.server_options,
+                upload_audio=options.get("upload_audio", False)
             )
         # faster-whisper client
         else:
@@ -816,7 +823,8 @@ class TranscriptionServer:
                 token=options.get("token"),
                 meeting_id=options.get("meeting_id"),
                 collector_client_ref=self.collector_client,
-                server_options=self.server_options
+                server_options=self.server_options,
+                upload_audio=options.get("upload_audio", False)
             )
         self.client_manager.add_client(websocket, client)
         logging.info(f"Added client {client.client_uid}, total clients: {len(self.client_manager.clients)}")
@@ -1367,6 +1375,9 @@ class TranscriptionServer:
         client = self.client_manager.get_client(websocket)
         if client:
             client_uid = client.client_uid if hasattr(client, 'client_uid') else 'unknown'
+            # Call client cleanup first (which will save and upload audio to MinIO)
+            if hasattr(client, 'cleanup'):
+                client.cleanup()
             self.client_manager.remove_client(websocket)
             logging.info(f"Removed client {client_uid}, remaining clients: {len(self.client_manager.clients)}")
         else:
@@ -1634,11 +1645,17 @@ class ServeClientBase(object):
     def __init__(self, websocket, language="en", task="transcribe", client_uid=None, 
                  platform=None, meeting_url=None, token=None, meeting_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
-                 server_options: Optional[dict] = None):
+                 server_options: Optional[dict] = None, upload_audio: bool = False):
         self.websocket = websocket
         self.language = language
         self.task = task
-        self.client_uid = client_uid or str(uuid.uuid4())
+        # Use provided client_uid if it's a non-empty string, otherwise generate new UUID
+        if client_uid and isinstance(client_uid, str) and client_uid.strip():
+            self.client_uid = client_uid
+        else:
+            self.client_uid = str(uuid.uuid4())
+            if client_uid is not None:
+                logging.warning(f"Provided client_uid '{client_uid}' is empty or invalid, generated new UUID: {self.client_uid}")
         self.platform = platform
         self.meeting_url = meeting_url
         self.token = token
@@ -1659,6 +1676,8 @@ class ServeClientBase(object):
         self.t_start = None
         self.exit = False
         self.same_output_count = 0
+        self._cleanup_called = False  # Flag to prevent double cleanup
+        self.upload_audio = upload_audio  # Flag to enable/disable audio upload to MinIO
 
         server_options = server_options or {}
         self.max_buffer_s = server_options.get("max_buffer_s", 45)
@@ -1679,7 +1698,7 @@ class ServeClientBase(object):
         
         # Send SERVER_READY message
         ready_message = json.dumps({"status": self.SERVER_READY, "uid": self.client_uid})
-        logging.info(f"Client {self.client_uid} connected. Sending SERVER_READY.")
+        logging.info(f"Client {self.client_uid} connected. Sending SERVER_READY. (platform={platform}, meeting_id={meeting_id}, upload_audio={self.upload_audio})")
         self.websocket.send(ready_message)
         
         # Use the instance's self.collector_client
@@ -1958,6 +1977,169 @@ class ServeClientBase(object):
             "message": self.DISCONNECT
         }))
 
+    def _save_audio_to_wav(self, audio_np: np.ndarray, output_path: str) -> bool:
+        """
+        Save numpy audio array to WAV file.
+        
+        Args:
+            audio_np: NumPy array with audio data (float32, range -1.0 to 1.0)
+            output_path: Path to save the WAV file
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Convert float32 (-1.0 to 1.0) to int16
+            audio_int16 = (audio_np * 32767.0).astype(np.int16)
+            
+            with wave.open(output_path, 'wb') as wav_file:
+                wav_file.setnchannels(1)  # Mono
+                wav_file.setsampwidth(2)  # 16-bit (2 bytes)
+                wav_file.setframerate(self.RATE)  # 16000 Hz
+                wav_file.writeframes(audio_int16.tobytes())
+            
+            logging.info(f"Saved audio to {output_path}, duration: {len(audio_np) / self.RATE:.2f}s")
+            return True
+        except Exception as e:
+            logging.error(f"Error saving audio to WAV: {e}")
+            return False
+
+    def _upload_to_minio(self, file_path: str, object_name: str) -> Optional[str]:
+        """
+        Upload a file to MinIO.
+        
+        Args:
+            file_path: Local path to the file to upload
+            object_name: Object name in MinIO bucket
+            
+        Returns:
+            Object name if successful, None otherwise
+        """
+        try:
+            # Get MinIO configuration from environment
+            minio_host = os.getenv("MINIO_HOST")
+            minio_access_key = os.getenv("MINIO_ACCESS_KEY")
+            minio_secret_key = os.getenv("MINIO_SECRET_KEY")
+            minio_bucket = os.getenv("MINIO_BUCKET_NAME", "records")
+            minio_secure = os.getenv("MINIO_SECURE", "True").lower() == "true"
+            
+            if not all([minio_host, minio_access_key, minio_secret_key]):
+                logging.warning("[MinIO] Configuration incomplete, skipping upload")
+                return None
+            
+            logging.info(f"[MinIO] Initializing MinIO client. Host: {minio_host}, Secure: {minio_secure}, Bucket: {minio_bucket}")
+            
+            # Initialize MinIO client
+            minio_client = Minio(
+                minio_host,
+                access_key=minio_access_key,
+                secret_key=minio_secret_key,
+                secure=minio_secure
+            )
+            
+            # Ensure bucket exists
+            bucket_exists = minio_client.bucket_exists(minio_bucket)
+            if not bucket_exists:
+                logging.info(f"[MinIO] Bucket '{minio_bucket}' does not exist, creating it...")
+                minio_client.make_bucket(minio_bucket)
+                logging.info(f"[MinIO] Created bucket: {minio_bucket}")
+            else:
+                logging.info(f"[MinIO] Bucket '{minio_bucket}' exists")
+            
+            # Upload file
+            logging.info(f"[MinIO] Starting upload of {file_path} ({os.path.getsize(file_path)} bytes) to '{minio_bucket}/{object_name}'")
+            minio_client.fput_object(minio_bucket, object_name, file_path)
+            
+            # Verify upload by checking if object exists
+            try:
+                stat = minio_client.stat_object(minio_bucket, object_name)
+                logging.info(f"[MinIO] Upload verified. Object size: {stat.size} bytes, Content-Type: {stat.content_type}")
+            except Exception as verify_error:
+                logging.warning(f"[MinIO] Could not verify upload: {verify_error}")
+            
+            # Construct URL (for reference, may not be accessible depending on MinIO setup)
+            protocol = "https" if minio_secure else "http"
+            url = f"{protocol}://{minio_host}/{minio_bucket}/{object_name}"
+            logging.info(f"[MinIO] Upload complete. Object path: {minio_bucket}/{object_name} (URL: {url})")
+            
+            return object_name
+        except S3Error as e:
+            logging.error(f"[MinIO] S3 error uploading {file_path}: {e}")
+            return None
+        except Exception as e:
+            logging.error(f"[MinIO] Error uploading to MinIO: {e}", exc_info=True)
+            return None
+
+    def _save_and_upload_audio(self):
+        """
+        Save current audio buffer to WAV file and upload to MinIO.
+        This is called during cleanup to preserve the session audio.
+        """
+        logging.info(f"[MinIO] Starting audio save/upload process for client {self.client_uid}")
+        
+        # Check if MinIO is configured
+        minio_host = os.getenv("MINIO_HOST")
+        minio_access_key = os.getenv("MINIO_ACCESS_KEY")
+        minio_secret_key = os.getenv("MINIO_SECRET_KEY")
+        
+        if not all([minio_host, minio_access_key, minio_secret_key]):
+            logging.warning(f"[MinIO] Configuration incomplete. Host: {bool(minio_host)}, AccessKey: {bool(minio_access_key)}, SecretKey: {bool(minio_secret_key)}. Skipping audio upload.")
+            return
+        
+        logging.info(f"[MinIO] Configuration found. Host: {minio_host}")
+        
+        # Check if we have audio data
+        self.lock.acquire()
+        try:
+            if self.frames_np is None or len(self.frames_np) == 0:
+                logging.warning(f"[MinIO] No audio data to save for client {self.client_uid} (frames_np is None or empty)")
+                return
+            
+            audio_duration = len(self.frames_np) / self.RATE
+            logging.info(f"[MinIO] Found audio data: {len(self.frames_np)} samples, duration: {audio_duration:.2f}s")
+            audio_data = self.frames_np.copy()
+        finally:
+            self.lock.release()
+        
+        # Create temporary WAV file
+        temp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                temp_file = tmp.name
+            
+            logging.info(f"[MinIO] Created temporary file: {temp_file}")
+            
+            # Save audio to WAV
+            if not self._save_audio_to_wav(audio_data, temp_file):
+                logging.error(f"[MinIO] Failed to save audio to WAV file")
+                return
+            
+            # Check file size
+            file_size = os.path.getsize(temp_file)
+            logging.info(f"[MinIO] WAV file saved successfully. Size: {file_size} bytes ({file_size / 1024:.2f} KB)")
+            
+            # Generate object name: save directly in bucket root as {session_uid}.wav
+            object_name = f"{self.client_uid}.wav"
+            
+            logging.info(f"[MinIO] Uploading to MinIO. Bucket: {os.getenv('MINIO_BUCKET_NAME', 'records')}, Object: {object_name}")
+            
+            # Upload to MinIO
+            uploaded_object = self._upload_to_minio(temp_file, object_name)
+            
+            if uploaded_object:
+                logging.info(f"[MinIO] ✅ Successfully uploaded audio for client {self.client_uid} to MinIO: {object_name}")
+            else:
+                logging.error(f"[MinIO] ❌ Failed to upload audio for client {self.client_uid} to MinIO")
+            
+        finally:
+            # Clean up temporary file
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    logging.info(f"[MinIO] Removed temporary file: {temp_file}")
+                except Exception as e:
+                    logging.warning(f"[MinIO] Failed to remove temporary file {temp_file}: {e}")
+
     def cleanup(self):
         """
         Perform cleanup tasks before exiting the transcription service.
@@ -1965,9 +2147,27 @@ class ServeClientBase(object):
         This method performs necessary cleanup tasks, including stopping the transcription thread, marking
         the exit flag to indicate the transcription thread should exit gracefully, and destroying resources
         associated with the transcription process.
+        
+        Also saves and uploads the audio recording to MinIO if configured.
 
         """
-        logging.info("Cleaning up.")
+        # Prevent double cleanup
+        if self._cleanup_called:
+            logging.debug(f"Cleanup already called for client {self.client_uid}, skipping")
+            return
+        
+        self._cleanup_called = True
+        logging.info(f"Cleaning up client {self.client_uid}.")
+        
+        # Save and upload audio to MinIO before cleanup (only if enabled and MinIO is configured)
+        if self.upload_audio:
+            try:
+                self._save_and_upload_audio()
+            except Exception as e:
+                logging.error(f"Error saving/uploading audio during cleanup: {e}")
+        else:
+            logging.debug(f"Audio upload disabled for client {self.client_uid} (upload_audio=False)")
+        
         self.exit = True
 
     def forward_to_collector(self, segments):
@@ -1992,9 +2192,9 @@ class ServeClientTensorRT(ServeClientBase):
                  client_uid=None, model=None, single_model=False, 
                  platform=None, meeting_url=None, token=None, meeting_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
-                 server_options: Optional[dict] = None):
+                 server_options: Optional[dict] = None, upload_audio: bool = False):
         super().__init__(websocket, language, task, client_uid, platform, meeting_url, token, meeting_id,
-                         collector_client_ref=collector_client_ref, server_options=server_options)
+                         collector_client_ref=collector_client_ref, server_options=server_options, upload_audio=upload_audio)
         self.eos = False
         
         # Log the critical parameters
@@ -2375,9 +2575,9 @@ class ServeClientFasterWhisper(ServeClientBase):
                  vad_parameters=None, use_vad=True, single_model=False, 
                  platform=None, meeting_url=None, token=None, meeting_id=None,
                  collector_client_ref: Optional[TranscriptionCollectorClient] = None,
-                 server_options: Optional[dict] = None):
+                 server_options: Optional[dict] = None, upload_audio: bool = False):
         super().__init__(websocket, language, task, client_uid, platform, meeting_url, token, meeting_id,
-                         collector_client_ref=collector_client_ref, server_options=server_options)
+                         collector_client_ref=collector_client_ref, server_options=server_options, upload_audio=upload_audio)
         self.model_sizes = [
             "tiny", "tiny.en", "base", "base.en", "small", "small.en",
             "medium", "medium.en", "large-v2", "large-v3", "distil-small.en",
