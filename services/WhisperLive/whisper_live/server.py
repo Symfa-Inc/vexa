@@ -1696,6 +1696,13 @@ class ServeClientBase(object):
         # threading
         self.lock = threading.Lock()
         
+        # Audio file streaming for MinIO upload (if enabled)
+        self.audio_file_path = None
+        self.audio_file_handle = None
+        self.audio_file_lock = threading.Lock()  # Separate lock for file operations
+        if self.upload_audio:
+            self._initialize_audio_file()
+        
         # Send SERVER_READY message
         ready_message = json.dumps({"status": self.SERVER_READY, "uid": self.client_uid})
         logging.info(f"Client {self.client_uid} connected. Sending SERVER_READY. (platform={platform}, meeting_id={meeting_id}, upload_audio={self.upload_audio})")
@@ -1790,6 +1797,60 @@ class ServeClientBase(object):
     def handle_transcription_output(self):
         raise NotImplementedError
 
+    def _initialize_audio_file(self):
+        """
+        Initialize a WAV file for streaming audio recording.
+        Creates a temporary file that will be written to as audio frames arrive.
+        """
+        try:
+            # Create temporary WAV file
+            temp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+            self.audio_file_path = temp_file.name
+            temp_file.close()
+            
+            # Open WAV file for writing
+            self.audio_file_handle = wave.open(self.audio_file_path, 'wb')
+            self.audio_file_handle.setnchannels(1)  # Mono
+            self.audio_file_handle.setsampwidth(2)  # 16-bit (2 bytes)
+            self.audio_file_handle.setframerate(self.RATE)  # 16000 Hz
+            
+            logging.info(f"[AudioFile] Initialized streaming audio file: {self.audio_file_path} for client {self.client_uid}")
+        except Exception as e:
+            logging.error(f"[AudioFile] Failed to initialize audio file for client {self.client_uid}: {e}")
+            self.audio_file_path = None
+            self.audio_file_handle = None
+
+    def _write_audio_frame_to_file(self, frame_np):
+        """
+        Write audio frame to the streaming WAV file.
+        
+        Args:
+            frame_np: NumPy array with audio data (float32, range -1.0 to 1.0)
+        """
+        if not self.upload_audio or self.audio_file_handle is None:
+            return
+        
+        try:
+            self.audio_file_lock.acquire()
+            # Check if file handle is still valid
+            if self.audio_file_handle is None:
+                return
+            # Convert float32 (-1.0 to 1.0) to int16
+            audio_int16 = (frame_np * 32767.0).astype(np.int16)
+            # Write frames to file
+            self.audio_file_handle.writeframes(audio_int16.tobytes())
+        except Exception as e:
+            logging.error(f"[AudioFile] Error writing audio frame to file for client {self.client_uid}: {e}")
+            # If file handle is broken, disable further writes
+            try:
+                if self.audio_file_handle:
+                    self.audio_file_handle.close()
+            except:
+                pass
+            self.audio_file_handle = None
+        finally:
+            self.audio_file_lock.release()
+
     def add_frames(self, frame_np):
         """
         Add audio frames to the ongoing audio stream buffer.
@@ -1806,6 +1867,11 @@ class ServeClientBase(object):
             frame_np (numpy.ndarray): The audio frame data as a NumPy array.
 
         """
+        # Write audio frame to file immediately (streaming recording)
+        # This happens before buffer management, so all audio is saved
+        self._write_audio_frame_to_file(frame_np)
+        
+        # Buffer management for transcription (unchanged)
         self.lock.acquire()
         if self.frames_np is not None and self.frames_np.shape[0] > self.max_buffer_s * self.RATE:
             self.frames_offset += self.discard_buffer_s
@@ -2070,11 +2136,76 @@ class ServeClientBase(object):
             logging.error(f"[MinIO] Error uploading to MinIO: {e}", exc_info=True)
             return None
 
+    def _close_and_upload_audio_file(self):
+        """
+        Close the streaming audio file and upload it to MinIO.
+        This is called during cleanup to preserve the full session audio.
+        """
+        logging.info(f"[AudioFile] Starting audio file close/upload process for client {self.client_uid}")
+        
+        # Close the audio file handle
+        if self.audio_file_handle is not None:
+            try:
+                self.audio_file_lock.acquire()
+                self.audio_file_handle.close()
+                self.audio_file_handle = None
+                logging.info(f"[AudioFile] Closed audio file handle for client {self.client_uid}")
+            except Exception as e:
+                logging.error(f"[AudioFile] Error closing audio file handle for client {self.client_uid}: {e}")
+            finally:
+                self.audio_file_lock.release()
+        
+        # Check if file exists and has content
+        if not self.audio_file_path or not os.path.exists(self.audio_file_path):
+            logging.warning(f"[AudioFile] No audio file to upload for client {self.client_uid}")
+            return
+        
+        file_size = os.path.getsize(self.audio_file_path)
+        if file_size == 0:
+            logging.warning(f"[AudioFile] Audio file is empty for client {self.client_uid}, skipping upload")
+            try:
+                os.remove(self.audio_file_path)
+            except Exception as e:
+                logging.warning(f"[AudioFile] Failed to remove empty file: {e}")
+            return
+        
+        # Calculate duration (approximate, based on file size)
+        # WAV header is typically 44 bytes, then audio data
+        # Each sample is 2 bytes (16-bit), at 16000 Hz
+        audio_bytes = file_size - 44  # Approximate, WAV header size
+        duration = audio_bytes / (2 * self.RATE)  # 2 bytes per sample, RATE samples per second
+        logging.info(f"[AudioFile] Audio file ready: {self.audio_file_path}, size: {file_size} bytes ({file_size / 1024:.2f} KB), duration: ~{duration:.2f}s")
+        
+        # Generate object name: save directly in bucket root as {session_uid}.wav
+        object_name = f"{self.client_uid}.wav"
+        
+        logging.info(f"[MinIO] Uploading to MinIO. Bucket: {os.getenv('MINIO_BUCKET_NAME', 'records')}, Object: {object_name}")
+        
+        # Upload to MinIO
+        uploaded_object = self._upload_to_minio(self.audio_file_path, object_name)
+        
+        if uploaded_object:
+            logging.info(f"[MinIO] ✅ Successfully uploaded audio for client {self.client_uid} to MinIO: {object_name}")
+        else:
+            logging.error(f"[MinIO] ❌ Failed to upload audio for client {self.client_uid} to MinIO")
+        
+        # Clean up temporary file
+        try:
+            os.remove(self.audio_file_path)
+            logging.info(f"[AudioFile] Removed temporary file: {self.audio_file_path}")
+        except Exception as e:
+            logging.warning(f"[AudioFile] Failed to remove temporary file {self.audio_file_path}: {e}")
+        
+        self.audio_file_path = None
+
     def _save_and_upload_audio(self):
         """
-        Save current audio buffer to WAV file and upload to MinIO.
-        This is called during cleanup to preserve the session audio.
+        DEPRECATED: Save current audio buffer to WAV file and upload to MinIO.
+        This method is kept for backward compatibility but is no longer used.
+        The new streaming approach (_close_and_upload_audio_file) saves all audio,
+        not just what's in the buffer.
         """
+        logging.warning(f"[MinIO] _save_and_upload_audio() is deprecated. Use streaming audio recording instead.")
         logging.info(f"[MinIO] Starting audio save/upload process for client {self.client_uid}")
         
         # Check if MinIO is configured
@@ -2159,12 +2290,12 @@ class ServeClientBase(object):
         self._cleanup_called = True
         logging.info(f"Cleaning up client {self.client_uid}.")
         
-        # Save and upload audio to MinIO before cleanup (only if enabled and MinIO is configured)
+        # Close audio file and upload to MinIO before cleanup (only if enabled and MinIO is configured)
         if self.upload_audio:
             try:
-                self._save_and_upload_audio()
+                self._close_and_upload_audio_file()
             except Exception as e:
-                logging.error(f"Error saving/uploading audio during cleanup: {e}")
+                logging.error(f"Error closing/uploading audio file during cleanup: {e}")
         else:
             logging.debug(f"Audio upload disabled for client {self.client_uid} (upload_audio=False)")
         
