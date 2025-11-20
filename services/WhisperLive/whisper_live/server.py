@@ -872,6 +872,8 @@ class TranscriptionServer:
                     self.handle_audio_chunk_metadata(websocket, control_message)
                 elif message_type == "session_control":
                     self.handle_session_control(websocket, control_message)
+                elif message_type == "change_language":
+                    self.handle_change_language(websocket, control_message)
                 else:
                     logging.warning(f"Unknown control message type: {message_type}")
                 
@@ -935,6 +937,51 @@ class TranscriptionServer:
                 
         except Exception as e:
             logging.error(f"Error processing session control: {e}")
+
+    def handle_change_language(self, websocket, control_message):
+        """
+        Handle language change requests during an active session.
+        
+        Args:
+            websocket: The websocket connection
+            control_message: The parsed control message with language change request
+                Expected format: {"type": "change_language", "language": "ru", "uid": "client_uid"}
+        """
+        try:
+            client = self.client_manager.get_client(websocket)
+            if not client:
+                logging.warning("Language change requested but no client found for websocket")
+                return
+            
+            new_language = control_message.get("language")
+            if not new_language:
+                logging.warning(f"Language change requested but no language specified for client {client.client_uid}")
+                return
+            
+            # Validate language code (basic check)
+            if not isinstance(new_language, str) or len(new_language) != 2:
+                logging.warning(f"Invalid language code '{new_language}' for client {client.client_uid}")
+                return
+            
+            old_language = client.language
+            client.language = new_language
+            
+            logging.info(f"Language changed for client {client.client_uid}: {old_language} -> {new_language}")
+            
+            # Send confirmation to client
+            language_data = {
+                "uid": client.client_uid,
+                "language": new_language,
+                "language_prob": 1.0,  # Manual change, so confidence is 1.0
+                "changed": True,
+                "previous_language": old_language
+            }
+            client.websocket.send(json.dumps(language_data))
+            
+            logger.info(f"LANGUAGE_CHANGED: client={client.client_uid}, old={old_language}, new={new_language}")
+            
+        except Exception as e:
+            logging.error(f"Error processing language change: {e}")
 
     def handle_speaker_activity_update(self, websocket, control_message):
         """
@@ -1561,6 +1608,8 @@ class TranscriptionServer:
                 self.handle_speaker_activity_update(websocket, control_message)
             elif message_type == "audio_chunk_metadata":
                 self.handle_audio_chunk_metadata(websocket, control_message)
+            elif message_type == "change_language":
+                self.handle_change_language(websocket, control_message)
             else:
                 logging.warning(f"Unknown control message type: {message_type} from UID {client.uid if client else 'N/A'}")
         except json.JSONDecodeError:
