@@ -1842,33 +1842,23 @@ class WhisperModel:
             if not segment_language_probs:
                 continue
             
-            # Get the maximum probability in this segment
-            max_prob = max(prob for _, prob in segment_language_probs)
+            # Get top language and its probability (list is sorted by probability descending)
+            top_lang, top_prob = segment_language_probs[0]
             
             # Skip segments with very low confidence - these are likely noise or silence
-            # Also check if probabilities are too evenly distributed (high entropy = uncertain)
-            if max_prob < min_segment_confidence:
+            if top_prob < min_segment_confidence:
                 # This segment is likely noise/silence, skip it
-                if self.logger:
-                    self.logger.debug(
-                        f"Skipping segment with low confidence (max_prob={max_prob:.3f} < {min_segment_confidence})"
-                    )
                 continue
             
             # Additional check: if top language probability is too close to second place,
             # it might indicate uncertainty/noise. Require at least 0.15 difference for confidence.
             # Also check if top probability is below a reasonable threshold even if it passed min_segment_confidence
             if len(segment_language_probs) >= 2:
-                top_prob = segment_language_probs[0][1]
                 second_prob = segment_language_probs[1][1]
                 prob_diff = top_prob - second_prob
                 # Skip if: (uncertainty AND low confidence) OR (very low top probability)
                 if (prob_diff < 0.15 and top_prob < 0.5) or top_prob < 0.35:
                     # Too uncertain or too low confidence, likely noise/silence
-                    if self.logger:
-                        self.logger.debug(
-                            f"Skipping uncertain/low-confidence segment (top_prob={top_prob:.3f}, diff={prob_diff:.3f})"
-                        )
                     continue
             
             # Aggregate probabilities for all languages in this segment
@@ -1920,11 +1910,6 @@ class WhisperModel:
                     else:
                         # Very low confidence, return "en" as fallback with low probability
                         # This allows transcription to proceed, but the system knows it's uncertain
-                        if self.logger:
-                            self.logger.info(
-                                f"All segments filtered out, last segment has low confidence ({top_prob:.3f} < 0.6). "
-                                f"Returning 'en' with probability 0.0"
-                            )
                         language, language_probability = "en", 0.0
                 else:
                     # No language probabilities available, use "en" as fallback
@@ -1952,11 +1937,6 @@ class WhisperModel:
                     # Confidence too low, likely noise/silence - return "en" as fallback with low probability
                     # This allows transcription to proceed, but the system knows it's uncertain
                     # and won't set the language (set_language requires > 0.5)
-                    if self.logger:
-                        self.logger.info(
-                            f"Language detection confidence too low ({language_probability:.3f} < 0.6), "
-                            f"likely noise/silence. Returning 'en' with probability 0.0"
-                        )
                     language, language_probability = "en", 0.0
 
         return language, language_probability, all_language_probs
