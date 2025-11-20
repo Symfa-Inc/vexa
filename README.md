@@ -233,6 +233,7 @@ make build-bot-image
 
 # 4. Build and start all services with docker-compose
 docker-compose --profile cpu build
+docker network create vexa_shared_network
 docker-compose --profile cpu up -d
 
 # 5. Initialize database
