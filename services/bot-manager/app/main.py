@@ -381,6 +381,8 @@ async def request_bot(
         meeting_data = {}
         if req.passcode:
             meeting_data['passcode'] = req.passcode
+        if req.title:
+            meeting_data['title'] = req.title
             
         new_meeting = Meeting(
             user_id=current_user.id,
