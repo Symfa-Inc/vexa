@@ -550,26 +550,19 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
               const participants: string[] = [];
               const mainElement = document.querySelector('main');
               if (mainElement) {
-                const nameElements = mainElement.querySelectorAll('*');
-                nameElements.forEach((el: Element) => {
-                  const element = el as HTMLElement;
-                  const text = (element.textContent || '').trim();
-                  if (text && element.children.length === 0) {
-                    // Basic length validation only (allow numbers, parentheses, etc.)
-                    if ((text.length > 1 && text.length < 50) || (botName && text === botName)) {
-                      participants.push(text);
+                mainElement.querySelectorAll('[data-participant-id]').forEach((element) => {
+                  const participant = element.querySelector('span[class~=notranslate]');
+                  if (participant) {
+                    const text = (participant.textContent || '').trim();
+                    if (text && participant.children.length === 0) {
+                      // Basic length validation only (allow numbers, parentheses, etc.)
+                      if ((text.length > 1 && text.length < 50) || (botName && text === botName)) {
+                        participants.push(text);
+                      }
                     }
                   }
                 });
               }
-              const tooltips = document.querySelectorAll('main [role="tooltip"]');
-              tooltips.forEach((el: Element) => {
-                const text = (el.textContent || '').trim();
-                // Basic length validation only (allow numbers, parentheses, etc.)
-                if (text && ((text.length > 1 && text.length < 50) || (botName && text === botName))) {
-                  participants.push(text);
-                }
-              });
               return Array.from(new Set(participants));
             };
 
